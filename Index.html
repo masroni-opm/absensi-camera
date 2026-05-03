@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Absensi Kamera GitHub</title>
+    <style>
+        video { width: 100%; max-width: 400px; border: 2px solid #ccc; }
+        #canvas { display: none; }
+    </style>
+</head>
+<body>
+    <h2>Sistem Absensi Kamera</h2>
+    <video id="video" autoplay playsinline></video>
+    <button onclick="ambilFoto()">Ambil Foto & Absen</button>
+    <p id="status"></p>
+
+    <canvas id="canvas" width="640" height="480"></canvas>
+
+    <script>
+        const video = document.getElementById('video');
+        const status = document.getElementById('status');
+        const WEB_APP_URL = "ISI_DENGAN_URL_APPS_SCRIPT_ANDA";
+
+        // Menyalakan Kamera (Ini akan berfungsi di GitHub Pages karena HTTPS)
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => { video.srcObject = stream; })
+            .catch(err => { alert("Kamera tidak diizinkan atau tidak ditemukan"); });
+
+        function ambilFoto() {
+            const canvas = document.getElementById('canvas');
+            const context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, 640, 480);
+            
+            status.innerText = "Sedang mengirim data...";
+
+            // Menyiapkan data untuk dikirim
+            const dataAbsensi = {
+                id_user: "User-001",
+                keterangan: "Hadir via GitHub Pages",
+                // image_url: canvas.toDataURL('image/jpeg') // Opsional: kirim foto dalam base64
+            };
+
+            // Mengirim data ke Google Apps Script
+            fetch(WEB_APP_URL, {
+                method: "POST",
+                mode: "no-cors", // Penting untuk Apps Script
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(dataAbsensi)
+            })
+            .then(() => {
+                status.innerText = "Absensi Berhasil Dicatat!";
+            })
+            .catch(err => {
+                status.innerText = "Gagal: " + err;
+            });
+        }
+    </script>
+</body>
+</html>
