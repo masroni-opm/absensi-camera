@@ -1,0 +1,345 @@
+<script>
+  let ALL_STUDENTS = [];
+  let html5QrcodeScanner = null;
+  let lastScannedNisn = null;
+  let scanCooldown = false;
+
+  document.addEventListener('DOMContentLoaded', function() {
+    loadInitialData();
+    setupTabs();
+    setupForm();
+    setupJenisSelector();
+    setDefaultDate();
+  });
+
+  function setupTabs() {
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const tab = btn.getAttribute('data-tab');
+        
+        // Hide all sections
+        document.getElementById('presensi-section').classList.add('hidden');
+        document.getElementById('dashboard-section').classList.add('hidden');
+        document.getElementById('laporan-section').classList.add('hidden');
+        
+        // Show target section
+        const target = document.getElementById(`${tab}-section`);
+        if (target) target.classList.remove('hidden');
+        
+        if (tab === 'dashboard') loadDashboard();
+        if (tab === 'scan') startScanner();
+        else stopScanner();
+      });
+    });
+  }
+
+  function loadInitialData() {
+    showLoading(true);
+    google.script.run
+      .withSuccessHandler(data => {
+        ALL_STUDENTS = data;
+        populateClassSelects();
+        showLoading(false);
+      })
+      .withFailureHandler(err => {
+        showLoading(false);
+        alert("Gagal memuat data siswa: " + err);
+      })
+      .getStudentData();
+  }
+
+  function populateClassSelects() {
+    const classes = [...new Set(ALL_STUDENTS.map(s => s.kelas))].sort();
+    const selects = [document.getElementById('classSelect'), document.getElementById('reportClassSelect')];
+    selects.forEach(sel => {
+      if (!sel) return;
+      classes.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = opt.textContent = c;
+        sel.appendChild(opt);
+      });
+    });
+  }
+
+  function filterStudentsByClass() {
+    const classFilter = document.getElementById('classSelect').value;
+    const container = document.getElementById('studentRows');
+    const isPulang = document.querySelector('input[name="jenis"]:checked').value === 'Pulang';
+    
+    container.innerHTML = '';
+    const filtered = ALL_STUDENTS.filter(s => s.kelas === classFilter);
+
+    if (filtered.length > 0) {
+      filtered.forEach(s => {
+        const div = document.createElement('div');
+        div.className = 'student-row';
+        div.innerHTML = `
+          <input type="checkbox" name="studentCheck" value="${s.nama}" checked>
+          <span class="student-name">${s.nama}</span>
+          <select class="status-mini-select ${isPulang ? 'hidden' : ''}" data-student="${s.nama}">
+            <option value="Hadir" selected>H</option>
+            <option value="Izin">I</option>
+            <option value="Sakit">S</option>
+            <option value="Alpha">A</option>
+          </select>
+        `;
+        container.appendChild(div);
+      });
+    } else {
+      container.innerHTML = '<p style="padding: 40px; text-align: center; color: var(--text-muted);">Pilih kelas untuk melihat siswa</p>';
+    }
+  }
+
+  function setupForm() {
+    const form = document.getElementById('attendanceForm');
+    form.addEventListener('submit', function(e) {
+      e.preventDefault();
+      const checked = document.querySelectorAll('input[name="studentCheck"]:checked');
+      if (checked.length === 0) { alert('Pilih siswa!'); return; }
+      const submission = {
+        jenis: document.querySelector('input[name="jenis"]:checked').value,
+        kelas: document.getElementById('classSelect').value,
+        students: Array.from(checked).map(cb => ({
+          nama: cb.value,
+          status: document.querySelector(`.status-mini-select[data-student="${cb.value}"]`).value
+        })),
+        date: document.getElementById('attendanceDate').value
+      };
+      setSubmitLoading(true);
+      google.script.run
+        .withSuccessHandler(res => {
+          setSubmitLoading(false);
+          if (res.success) showSuccess('Presensi berhasil dikirim.');
+          else alert('Gagal: ' + res.message);
+        })
+        .withFailureHandler(err => {
+          setSubmitLoading(false);
+          alert('Kesalahan sistem: ' + err);
+        })
+        .submitAttendance(submission);
+    });
+  }
+
+  /**
+   * REPORTING LOGIC
+   */
+  function toggleReportForms() {
+    const type = document.getElementById('reportType').value;
+    document.getElementById('dailyForm').classList.toggle('hidden', type !== 'daily');
+    document.getElementById('monthlyForm').classList.toggle('hidden', type !== 'monthly');
+  }
+
+  function fetchReport() {
+    const type = document.getElementById('reportType').value;
+    const className = document.getElementById('reportClassSelect').value;
+    if (!className) { alert('Pilih Kelas!'); return; }
+
+    const date = document.getElementById('reportDate').value;
+    const month = document.getElementById('reportMonth').value;
+    const year = document.getElementById('reportYear').value;
+
+    showLoading(true);
+    google.script.run
+      .withSuccessHandler(data => {
+        showLoading(false);
+        renderReportTable(data, type, className);
+      })
+      .withFailureHandler(err => {
+        showLoading(false);
+        alert("Gagal mengambil laporan: " + err);
+      })
+      .getReportData(type, date, month, year, className);
+  }
+
+  function renderReportTable(data, type, className) {
+    const container = document.getElementById('reportTableContainer');
+    document.getElementById('reportResult').classList.remove('hidden');
+    
+    let html = `
+      <div id="printArea">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px;">
+          <h2 style="margin:0">${document.querySelector('h2').innerText}</h2>
+          <p style="margin:0; font-weight:bold;">LAPORAN ABSENSI - KELAS ${className.toUpperCase()}</p>
+          <p style="font-size:0.8rem; margin:0">${type === 'daily' ? 'Tanggal: ' + document.getElementById('reportDate').value : 'Periode: ' + document.getElementById('reportMonth').selectedOptions[0].text + ' ' + document.getElementById('reportYear').value}</p>
+        </div>
+        <table style="width:100%; border-collapse: collapse; font-family: sans-serif; font-size: 11pt;">
+          <thead>
+            <tr style="background: #f3f3f3;">
+              <th style="border:1px solid #000; padding:8px;">No</th>
+              <th style="border:1px solid #000; padding:8px; text-align:left;">Nama Siswa</th>
+    `;
+
+    if (type === 'daily') {
+      html += `<th style="border:1px solid #000; padding:8px;">Masuk</th><th style="border:1px solid #000; padding:8px;">Pulang</th>`;
+    } else {
+      html += `<th style="border:1px solid #000; padding:8px;">H</th><th style="border:1px solid #000; padding:8px;">I</th><th style="border:1px solid #000; padding:8px;">S</th><th style="border:1px solid #000; padding:8px;">A</th>`;
+    }
+
+    html += `</tr></thead><tbody>`;
+    data.forEach((r, i) => {
+      html += `<tr><td style="border:1px solid #000; padding:6px; text-align:center;">${i+1}</td><td style="border:1px solid #000; padding:6px;">${r.nama}</td>`;
+      if (type === 'daily') {
+        html += `<td style="border:1px solid #000; padding:6px; text-align:center;">${r.masuk}</td><td style="border:1px solid #000; padding:6px; text-align:center;">${r.pulang}</td>`;
+      } else {
+        html += `<td style="border:1px solid #000; padding:6px; text-align:center;">${r.H}</td><td style="border:1px solid #000; padding:6px; text-align:center;">${r.I}</td><td style="border:1px solid #000; padding:6px; text-align:center;">${r.S}</td><td style="border:1px solid #000; padding:6px; text-align:center;">${r.A}</td>`;
+      }
+      html += `</tr>`;
+    });
+    html += `</tbody></table>
+      <div style="margin-top:40px; float:right; text-align:center; width:200px;">
+        <p>Gedangmas, ${new Date().toLocaleDateString('id-ID', {day:'numeric', month:'long', year:'numeric'})}</p>
+        <p style="margin-top:60px;">( .................................... )</p>
+        <p>Admin Madrasah</p>
+      </div>
+      <div style="clear:both;"></div>
+    </div>`;
+    
+    container.innerHTML = html;
+  }
+
+  function printReport() {
+    const printContent = document.getElementById('printArea').innerHTML;
+    const originalContent = document.body.innerHTML;
+    document.body.innerHTML = printContent;
+    window.print();
+    document.body.innerHTML = originalContent;
+    window.location.reload(); // Reload to restore UI
+  }
+
+  function setDefaultDate() {
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('reportDate').value = today;
+    document.getElementById('attendanceDate').value = today;
+  }
+  function showLoading(s) { document.getElementById('loading').classList.toggle('hidden', !s); }
+  function setSubmitLoading(l) { document.getElementById('submitBtn').disabled = l; }
+  function showSuccess(m) { alert(m); resetForm(); }
+  function resetForm() { document.getElementById('attendanceForm').reset(); document.getElementById('studentRows').innerHTML = ''; }
+  function toggleAllStudents(x) { document.getElementsByName('studentCheck').forEach(c => c.checked = x.checked); }
+
+  /**
+   * SCANNER LOGIC
+   */
+  function startScanner() {
+    if (!html5QrcodeScanner) {
+      html5QrcodeScanner = new Html5Qrcode("reader");
+    }
+    
+    const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+    
+    html5QrcodeScanner.start({ facingMode: "environment" }, config, onScanSuccess)
+      .then(() => {
+        document.getElementById('scan-restart-wrapper').classList.add('hidden');
+      })
+      .catch(err => {
+        console.error("Gagal start scanner:", err);
+        alert("Gagal mengakses kamera. Pastikan izin kamera diberikan.");
+      });
+  }
+
+  function stopScanner() {
+    if (html5QrcodeScanner && html5QrcodeScanner.isScanning) {
+      html5QrcodeScanner.stop().then(() => {
+        document.getElementById('scan-restart-wrapper').classList.remove('hidden');
+      }).catch(err => console.error("Error stop scanner:", err));
+    } else {
+       // If called when not scanning, still show button if we are in scan tab
+       const currentTab = document.querySelector('.tab-btn.active').getAttribute('data-tab');
+       if (currentTab === 'scan') document.getElementById('scan-restart-wrapper').classList.remove('hidden');
+    }
+  }
+
+  function onScanSuccess(decodedText) {
+    if (scanCooldown || decodedText === lastScannedNisn) return;
+    
+    console.log("Scanned NISN:", decodedText);
+    const student = ALL_STUDENTS.find(s => String(s.nisn) === decodedText || String(s.nama) === decodedText);
+    
+    if (student) {
+      processSuccessfulScan(student);
+    } else {
+      console.warn("Siswa tidak ditemukan untuk NISN:", decodedText);
+    }
+  }
+
+  function processSuccessfulScan(student) {
+    scanCooldown = true;
+    lastScannedNisn = student.nisn;
+    
+    const submission = {
+      jenis: document.querySelector('input[name="scanJenis"]:checked').value,
+      kelas: student.kelas,
+      students: [{ nama: student.nama, status: 'Hadir' }],
+      keterangan: 'Absen via QR',
+      date: new Date().toISOString().split('T')[0] // Ensure today's date is sent
+    };
+
+    google.script.run
+      .withSuccessHandler(res => {
+        console.log("QR Attendance Result:", res);
+        
+        if (res.success) {
+          playBeep();
+          showScanFeedback(student, false, "Berhasil Absen");
+          stopScanner(); 
+        } else {
+          showScanFeedback(student, true, res.message);
+        }
+
+        setTimeout(() => { 
+          scanCooldown = false; 
+          lastScannedNisn = null; 
+          document.getElementById('scan-feedback').classList.add('hidden');
+        }, 3000);
+      })
+      .withFailureHandler(err => {
+        alert("Kesalahan scanner: " + err);
+        scanCooldown = false;
+      })
+      .submitAttendance(submission);
+  }
+
+  function showScanFeedback(student, isWarning = false, msg = "Berhasil Absen") {
+    const card = document.getElementById('scan-feedback');
+    const icon = card.querySelector('.feedback-icon');
+    const info = card.querySelector('.feedback-info');
+    
+    document.getElementById('scan-student-name').innerText = student.nama;
+    document.getElementById('scan-status-msg').innerText = isWarning ? msg : `Kelas ${student.kelas} - ${msg}`;
+    
+    card.classList.toggle('warning', isWarning);
+    icon.classList.toggle('warning', isWarning);
+    icon.classList.toggle('success', !isWarning);
+    info.classList.toggle('warning', isWarning);
+    
+    if (isWarning) {
+      icon.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 9v4m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 18c-.77 1.333.192 3 1.732 3z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+    } else {
+      icon.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="3" fill="none"></path></svg>';
+    }
+    
+    card.classList.remove('hidden');
+  }
+
+  function playBeep() {
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
+      gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + 0.15); // Beep duration 150ms
+    } catch (e) {
+      console.error("Gagal putar suara:", e);
+    }
+  }
+</script>
